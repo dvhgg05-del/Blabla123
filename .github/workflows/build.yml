@@ -8,8 +8,8 @@ on:
     paths:
       - "plugins/english/novelpiaglobal.ts"
       - "public/static/src/en/novelpiaglobal/**"
-      - ".github/workflows/build.yml"
       - "scripts/rewrite-manifest.mjs"
+      - ".github/workflows/build.yml"
 
 permissions:
   contents: write
@@ -23,18 +23,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
-      # ----------------------------------------------------------
-      # 1. Checkout your repository
-      # ----------------------------------------------------------
       - name: Checkout custom repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ----------------------------------------------------------
-      # 2. Checkout the real LNReader build repository
-      # ----------------------------------------------------------
       - name: Checkout LNReader build repository
         uses: actions/checkout@v4
         with:
@@ -43,9 +36,6 @@ jobs:
           path: base
           fetch-depth: 1
 
-      # ----------------------------------------------------------
-      # 3. Node.js
-      # ----------------------------------------------------------
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -53,16 +43,10 @@ jobs:
           cache: npm
           cache-dependency-path: base/package-lock.json
 
-      # ----------------------------------------------------------
-      # 4. Install dependencies
-      # ----------------------------------------------------------
       - name: Install dependencies
         working-directory: base
         run: npm ci
 
-      # ----------------------------------------------------------
-      # 5. Copy your Novelpia source into LNReader's repository
-      # ----------------------------------------------------------
       - name: Inject Novelpia plugin
         run: |
           mkdir -p base/plugins/english
@@ -74,132 +58,130 @@ jobs:
           cp public/static/src/en/novelpiaglobal/icon.png \
             base/public/static/src/en/novelpiaglobal/icon.png
 
-      # ----------------------------------------------------------
-      # 6. Delete old compiled Novelpia bundle
-      # ----------------------------------------------------------
-      - name: Remove stale Novelpia build
-        run: |
-          rm -f base/.js/plugins/english/novelpiaglobal.js
-          rm -f base/.dist/plugins/english/novelpiaglobal.js
-
-      # ----------------------------------------------------------
-      # 7. Compile plugin
-      # ----------------------------------------------------------
-      - name: Compile Novelpia
+      - name: Compile plugin
         working-directory: base
-        run: npm run build:compile
+        run: |
+          npm run build:compile
 
-      # ----------------------------------------------------------
-      # 8. Verify compiled JavaScript
-      # ----------------------------------------------------------
-      - name: Verify compiled plugin
+      - name: Build manifest
+        working-directory: base
+        run: |
+          npm run build:manifest
+
+      - name: Verify Novelpia
         run: |
           set -e
 
-          test -s \
-            base/.js/plugins/english/novelpiaglobal.js
+          test -s base/.js/plugins/english/novelpiaglobal.js
+          test -f base/.dist/plugins.json
 
-          grep -q \
-            "Novelpia Global" \
-            base/.js/plugins/english/novelpiaglobal.js
-
-          echo "Novelpia compiled successfully."
-
-      # ----------------------------------------------------------
-      # 9. Generate LNReader manifest
-      # ----------------------------------------------------------
-      - name: Build manifest
-        working-directory: base
-        run: npm run build:manifest
-
-      # ----------------------------------------------------------
-      # 10. Copy only Novelpia into your repository's .dist
-      # ----------------------------------------------------------
-      - name: Publish Novelpia manifest and bundle
-        env:
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          node scripts/rewrite-manifest.mjs
-
-      # ----------------------------------------------------------
-      # 11. Verify final manifest
-      # ----------------------------------------------------------
-      - name: Verify final manifest
-        run: |
           node - <<'NODE'
           const fs = require('fs');
 
           const manifest = JSON.parse(
-            fs.readFileSync(
-              '.dist/plugins.min.json',
-              'utf8'
-            )
+            fs.readFileSync('base/.dist/plugins.json', 'utf8')
           );
 
-          if (
-            manifest.length !== 1 ||
-            manifest[0].id !== 'novelpiaglobal'
-          ) {
+          const plugin = manifest.find(
+            p => p.id === 'novelpiaglobal'
+          );
+
+          if (!plugin) {
             throw new Error(
-              'Final manifest does not contain Novelpia Global'
+              'Novelpia Global was not found in the generated manifest.'
             );
           }
 
-          if (
-            manifest[0].version !== '2.0.0'
-          ) {
+          console.log('Novelpia plugin:');
+          console.log(JSON.stringify(plugin, null, 2));
+
+          if (!plugin.version) {
             throw new Error(
-              `Expected 2.0.0, got ${manifest[0].version}`
+              'Novelpia plugin has no version.'
+            );
+          }
+
+          if (!plugin.url) {
+            throw new Error(
+              'Novelpia plugin has no download URL.'
             );
           }
 
           console.log(
-            JSON.stringify(
-              manifest[0],
-              null,
-              2
-            )
+            `Verified Novelpia version ${plugin.version}`
           );
           NODE
 
-      # ----------------------------------------------------------
-      # 12. Commit generated files
-      # ----------------------------------------------------------
+      - name: Publish Novelpia manifest and bundle
+        env:
+          BASE_MANIFEST: ${{ github.workspace }}/base/.dist/plugins.json
+          BASE_DIST: ${{ github.workspace }}/base/.dist
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          node scripts/rewrite-manifest.mjs
+
+      - name: Verify final distribution
+        run: |
+          set -e
+
+          test -f .dist/plugins.json
+          test -f .dist/plugins.min.json
+
+          node - <<'NODE'
+          const fs = require('fs');
+
+          const manifest = JSON.parse(
+            fs.readFileSync('.dist/plugins.json', 'utf8')
+          );
+
+          if (
+            !Array.isArray(manifest) ||
+            manifest.length !== 1 ||
+            manifest[0].id !== 'novelpiaglobal'
+          ) {
+            throw new Error(
+              'Final manifest does not contain exactly Novelpia Global.'
+            );
+          }
+
+          console.log(
+            'Final manifest:'
+          );
+
+          console.log(
+            JSON.stringify(manifest[0], null, 2)
+          );
+          NODE
+
       - name: Commit generated files
         run: |
-          git config user.name \
-            'github-actions[bot]'
+          set -e
 
-          git config user.email \
-            '41898282+github-actions[bot]@users.noreply.github.com'
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add .dist
+          git add -f .dist
 
           if git diff --cached --quiet; then
-            echo 'No generated changes.'
+            echo "No generated files changed."
             exit 0
           fi
 
-          git commit \
-            -m 'build: Novelpia Global 2.0.0'
+          git commit -m "build: Novelpia Global plugin"
 
           git fetch origin main
-
           git rebase origin/main
 
           git push origin HEAD:main
 
-      # ----------------------------------------------------------
-      # 13. Print repository URL
-      # ----------------------------------------------------------
-      - name: Print extension URL
+      - name: Show extension URL
         run: |
           echo ""
           echo "=============================================="
-          echo "Novelpia Global build completed successfully."
+          echo "BUILD SUCCESSFUL"
           echo ""
-          echo "Extension repository URL:"
+          echo "Extension manifest:"
           echo ""
-          echo "https://raw.githubusercontent.com/${{ github.repository }}/main/.dist/plugins.min.json"
+          echo "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/.dist/plugins.min.json"
           echo ""
           echo "=============================================="
