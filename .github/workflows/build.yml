@@ -3,63 +3,195 @@ name: Build Novelpia plugin
 on:
   workflow_dispatch:
   push:
-    branches: [main]
-    paths-ignore:
-      - '.dist/**'
+    branches:
+      - main
+    paths:
+      - "plugins/english/novelpiaglobal.ts"
+      - "public/static/src/en/novelpiaglobal/**"
+      - ".github/workflows/build.yml"
 
 permissions:
   contents: write
 
+concurrency:
+  group: novelpia-build
+  cancel-in-progress: true
+
 jobs:
   build:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout custom repository
-        uses: actions/checkout@v4
 
-      - name: Checkout LNReader plugin build environment
+    steps:
+      # ------------------------------------------------------------
+      # Checkout your repository
+      # ------------------------------------------------------------
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          repository: LNReader/lnreader-plugins
-          ref: master
-          path: base
+          fetch-depth: 0
+          persist-credentials: true
 
+      # ------------------------------------------------------------
+      # Node.js
+      # ------------------------------------------------------------
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
-          cache-dependency-path: base/package-lock.json
 
-      - name: Install LNReader plugin dependencies
+      # ------------------------------------------------------------
+      # Install LNReader plugin dependencies
+      # ------------------------------------------------------------
+      - name: Install dependencies
         run: npm ci
-        working-directory: base
 
-      - name: Inject Novelpia source
+      # ------------------------------------------------------------
+      # Build the normal LNReader plugin bundle
+      # ------------------------------------------------------------
+      - name: Build plugin bundle
         run: |
-          mkdir -p base/plugins/english base/public/static/src/en/novelpiaglobal
-          cp plugins/english/novelpiaglobal.ts base/plugins/english/novelpiaglobal.ts
-          cp public/static/src/en/novelpiaglobal/icon.png base/public/static/src/en/novelpiaglobal/icon.png
-
-      - name: Build plugin bundle and manifest
-        run: |
+          npm run clean:multisrc
+          npm run build:multisrc
           npm run build:compile
-          npm run build:manifest
-        working-directory: base
 
-      - name: Publish only Novelpia artifacts into this repository
-        env:
-          BASE_MANIFEST: ${{ github.workspace }}/base/.dist/plugins.json
-          BASE_DIST: ${{ github.workspace }}/base/.dist
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          PUBLISH_REF: main
-        run: node scripts/rewrite-manifest.mjs
-
-      - name: Commit generated .dist files
+      # ------------------------------------------------------------
+      # Publish branch name
+      # Example:
+      #   package.json version = 3.0.0
+      #   publish branch       = plugins/v3.0.0
+      # ------------------------------------------------------------
+      - name: Determine publish branch
+        id: version
+        shell: bash
         run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add .dist
-          git diff --cached --quiet || git commit -m 'build: Novelpia Global plugin'
-          git push
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "branch=plugins/v$VERSION" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------
+      # Create manifest.
+      #
+      # LNReader's manifest generator uses:
+      #   .js/src/plugins/<language>/<plugin>.js
+      #
+      # We tell it the final publish branch so the generated URLs
+      # point at the branch that will actually contain the files.
+      # ------------------------------------------------------------
+      - name: Build plugin manifest
+        env:
+          BRANCH: ${{ steps.version.outputs.branch }}
+        run: |
+          npm run build:manifest
+
+      # ------------------------------------------------------------
+      # Verify Novelpia was actually generated
+      # ------------------------------------------------------------
+      - name: Verify Novelpia output
+        shell: bash
+        run: |
+          test -f ".js/plugins/english/novelpiaglobal.js"
+          test -f ".dist/plugins.json"
+          test -f ".dist/plugins.min.json"
+          test -f "public/static/src/en/novelpiaglobal/icon.png"
+
+          node <<'NODE'
+          const fs = require('fs');
+
+          const manifest = JSON.parse(
+            fs.readFileSync('.dist/plugins.json', 'utf8')
+          );
+
+          const plugin = manifest.find(
+            p => p.id === 'novelpiaglobal'
+          );
+
+          if (!plugin) {
+            console.error('Novelpia Global is missing from the manifest.');
+            process.exit(1);
+          }
+
+          console.log('Novelpia Global manifest entry:');
+          console.log(JSON.stringify(plugin, null, 2));
+
+          if (!plugin.url || !plugin.iconUrl) {
+            console.error('Novelpia manifest is missing url/iconUrl.');
+            process.exit(1);
+          }
+          NODE
+
+      # ------------------------------------------------------------
+      # Publish compiled files to plugins/vX.Y.Z
+      #
+      # This is the format LNReader documents for GitHub-hosted
+      # plugin repositories.
+      # ------------------------------------------------------------
+      - name: Publish plugin branch
+        shell: bash
+        env:
+          PUBLISH_BRANCH: ${{ steps.version.outputs.branch }}
+        run: |
+          CURRENT_BRANCH=$(git branch --show-current)
+
+          echo "Current branch: $CURRENT_BRANCH"
+          echo "Publishing to: $PUBLISH_BRANCH"
+
+          # Remove an old local copy of the publish branch, if present.
+          git branch -D "$PUBLISH_BRANCH" 2>/dev/null || true
+
+          # Create orphan publish branch.
+          git switch --orphan "$PUBLISH_BRANCH"
+
+          # Keep the working tree so the freshly generated build files
+          # remain available, but remove them from the Git index.
+          git reset
+
+          # The official LNReader publishing flow keeps the compiled
+          # plugins at this legacy path because the manifest points there.
+          rm -rf .js/src
+          mkdir -p .js/src
+          cp -r .js/plugins .js/src/plugins
+
+          # Make sure generated assets are included even though they may
+          # be ignored by the normal repository .gitignore.
+          git add -f \
+            public/static \
+            .dist \
+            .js/src/plugins \
+            total.svg 2>/dev/null || true
+
+          # Show exactly what will be published.
+          echo "Files to publish:"
+          git status --short
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git commit -m "chore: Publish Novelpia Global plugin"
+
+          # The publish branch is generated output, so force updating it
+          # is intentional.
+          git push -f origin "$PUBLISH_BRANCH"
+
+          # Return to main/source branch.
+          git switch "$CURRENT_BRANCH"
+
+      # ------------------------------------------------------------
+      # Print the repository URL to make installation easier
+      # ------------------------------------------------------------
+      - name: Show source URL
+        shell: bash
+        env:
+          PUBLISH_BRANCH: ${{ steps.version.outputs.branch }}
+        run: |
+          REPO="${GITHUB_REPOSITORY}"
+
+          echo ""
+          echo "=============================================="
+          echo "Novelpia Global build succeeded."
+          echo ""
+          echo "Add this URL to LNReader/Tsundoku:"
+          echo ""
+          echo "https://raw.githubusercontent.com/${REPO}/${PUBLISH_BRANCH}/.dist/plugins.min.json"
+          echo ""
+          echo "=============================================="
