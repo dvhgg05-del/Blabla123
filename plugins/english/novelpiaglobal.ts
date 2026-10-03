@@ -361,7 +361,7 @@ class NovelpiaGlobal implements Plugin.PluginBase {
   name = 'Novelpia Global';
   icon = 'src/en/novelpiaglobal/icon.png';
   site = SITE;
-  version = '1.3.0';
+  version = '1.3.2';
   filters: Filters | undefined = undefined;
 
   pluginSettings = {
