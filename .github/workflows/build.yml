@@ -1,0 +1,65 @@
+name: Build Novelpia plugin
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '.dist/**'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout custom repository
+        uses: actions/checkout@v4
+
+      - name: Checkout LNReader plugin build environment
+        uses: actions/checkout@v4
+        with:
+          repository: LNReader/lnreader-plugins
+          ref: master
+          path: base
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: base/package-lock.json
+
+      - name: Install LNReader plugin dependencies
+        run: npm ci
+        working-directory: base
+
+      - name: Inject Novelpia source
+        run: |
+          mkdir -p base/plugins/english base/public/static/src/en/novelpiaglobal
+          cp plugins/english/novelpiaglobal.ts base/plugins/english/novelpiaglobal.ts
+          cp public/static/src/en/novelpiaglobal/icon.png base/public/static/src/en/novelpiaglobal/icon.png
+
+      - name: Build plugin bundle and manifest
+        run: |
+          npm run build:compile
+          npm run build:manifest
+        working-directory: base
+
+      - name: Publish only Novelpia artifacts into this repository
+        env:
+          BASE_MANIFEST: ${{ github.workspace }}/base/.dist/plugins.json
+          BASE_DIST: ${{ github.workspace }}/base/.dist
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PUBLISH_REF: main
+        run: node scripts/rewrite-manifest.mjs
+
+      - name: Commit generated .dist files
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .dist
+          git diff --cached --quiet || git commit -m 'build: Novelpia Global plugin'
+          git push
