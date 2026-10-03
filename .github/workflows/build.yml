@@ -1,0 +1,117 @@
+name: Build Novelpia plugin
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'plugins/english/novelpiaglobal.ts'
+      - 'public/static/src/en/novelpiaglobal/**'
+      - 'scripts/rewrite-manifest.mjs'
+      - '.github/workflows/build.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: novelpia-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout custom repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout LNReader plugin build environment
+        uses: actions/checkout@v4
+        with:
+          repository: LNReader/lnreader-plugins
+          ref: master
+          path: base
+          fetch-depth: 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: base/package-lock.json
+
+      - name: Install LNReader plugin dependencies
+        working-directory: base
+        run: npm ci
+
+      - name: Inject Novelpia source
+        run: |
+          mkdir -p base/plugins/english
+          mkdir -p base/public/static/src/en/novelpiaglobal
+          cp plugins/english/novelpiaglobal.ts base/plugins/english/novelpiaglobal.ts
+          cp public/static/src/en/novelpiaglobal/icon.png base/public/static/src/en/novelpiaglobal/icon.png
+
+      - name: Compile plugin and build manifest
+        working-directory: base
+        run: |
+          npm run build:compile
+          npm run build:manifest
+
+      - name: Verify compiled Novelpia version
+        working-directory: base
+        shell: bash
+        run: |
+          set -e
+          SRC_VERSION=$(grep -oE "version = '[0-9]+\.[0-9]+\.[0-9]+'" plugins/english/novelpiaglobal.ts | head -1 | grep -oE "[0-9]+\.[0-9]+\.[0-9]+")
+          DIST_JS=.js/plugins/english/novelpiaglobal.js
+          test -f "$DIST_JS"
+          grep -q "this.version=\"$SRC_VERSION\"" "$DIST_JS"
+          echo "Compiled Novelpia version: $SRC_VERSION"
+
+      - name: Generate versioned Novelpia distribution
+        env:
+          BASE_MANIFEST: ${{ github.workspace }}/base/.dist/plugins.json
+          BASE_DIST: ${{ github.workspace }}/base/.dist
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node scripts/rewrite-manifest.mjs
+
+      - name: Verify final distribution
+        shell: bash
+        run: |
+          set -e
+          test -f .dist/plugins.min.json
+          test -f .dist/plugins.json
+          node - <<'NODE'
+          const fs = require('fs');
+          const m = JSON.parse(fs.readFileSync('.dist/plugins.json', 'utf8'));
+          if (m.length !== 1 || m[0].id !== 'novelpiaglobal') {
+            throw new Error('Unexpected Novelpia manifest');
+          }
+          if (!/\/versions\/v\d+\.\d+\.\d+\/novelpiaglobal\.js$/.test(m[0].url)) {
+            throw new Error('Manifest is not using a versioned plugin URL: ' + m[0].url);
+          }
+          console.log(JSON.stringify(m[0], null, 2));
+          NODE
+
+      - name: Commit generated .dist files
+        shell: bash
+        run: |
+          set -e
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -f .dist
+          if git diff --cached --quiet; then
+            echo 'No generated changes to commit.'
+            exit 0
+          fi
+          git commit -m 'build: Novelpia Global plugin'
+          git fetch origin main
+          git rebase origin/main
+          git push origin HEAD:main
+
+      - name: Show installation URL
+        run: |
+          echo "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/.dist/plugins.min.json"
