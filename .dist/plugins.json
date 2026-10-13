@@ -18,6 +18,15 @@
     "iconUrl": "https://raw.githubusercontent.com/dvhgg05-del/Blabla123/main/.dist/static/src/en/novelpiaglobal/icon.png"
   },
   {
+    "id": "ranobeapp",
+    "name": "Ranobe",
+    "site": "https://staging.ranobe.app",
+    "lang": "English",
+    "version": "1.0.0",
+    "url": "https://raw.githubusercontent.com/dvhgg05-del/Blabla123/main/.dist/plugins/english/ranobeapp.js",
+    "iconUrl": "https://raw.githubusercontent.com/dvhgg05-del/Blabla123/main/.dist/static/src/en/ranobeapp/icon.png"
+  },
+  {
     "id": "toastytranslations",
     "name": "Toasty Translations",
     "site": "https://toastytranslations.com",
