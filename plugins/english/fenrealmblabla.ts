@@ -46,7 +46,7 @@ const FRAG_SALT_V2 = 'fr-frag-v2';
 const AES_GCM_IV_LENGTH = 12;
 const AES_GCM_TAG_LENGTH = 16;
 
-const PLUGIN_VERSION = '1.1.1';
+const PLUGIN_VERSION = '1.1.2';
 
 /* ---- self-contained replacements for TextEncoder / TextDecoder / atob ---- */
 /* (the Android plugin host is not a browser and may not provide them)       */
